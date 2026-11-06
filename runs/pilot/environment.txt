@@ -1,0 +1,7 @@
+date: 2026-11-06T11:36:02
+python: 3.12.13
+os: Linux-7.0.0-42-generic-x86_64-with-glibc2.43
+cpu: Intel(R) Core(TM) i9-14900HX
+zlib (gzip): 1.3.2, level 6
+zstd: libzstd 1.5.7 (python-zstandard 0.25.0), level 3, single thread
+ram: 30.6 GiB
