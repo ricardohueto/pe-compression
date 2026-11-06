@@ -32,5 +32,5 @@ IMAGE_MIMES = {"image/jpeg": "jpg", "image/png": "png"}
 
 # --- Network etiquette -----------------------------------------------------
 # Wikimedia requires a descriptive User-Agent with a contact address.
-USER_AGENT = "PE-FIB-compression-study/1.0 (UPC student project; contact: YOUR_EMAIL)"
+USER_AGENT = "PE-FIB-compression-study/1.0 (UPC student project; contact: ricardo.hueto@estudiantat.upc.edu)"
 REQUEST_DELAY_S = 2.0              # pause before every download
