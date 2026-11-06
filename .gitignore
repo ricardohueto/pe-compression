@@ -1,0 +1,7 @@
+# Linux kernel clone (large, re-downloadable)
+external/
+# Downloaded sample files (large; the manifest lets anyone download them again)
+runs/*/files/
+# Python
+__pycache__/
+.venv/
