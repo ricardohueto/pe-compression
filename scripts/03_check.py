@@ -34,6 +34,8 @@ def main():
     errors, warnings = [], []
 
     # --- 1. Manifest ---------------------------------------------------------
+    if not (run_dir / "manifest.csv").exists():
+        sys.exit(f"{run_dir}/manifest.csv not found: run 01_select_sample.py first.")
     manifest = read_csv(run_dir / "manifest.csv")
     for t in config.TYPES:
         k = sum(1 for r in manifest if r["type"] == t)
@@ -68,12 +70,15 @@ def main():
     if results and {r["id"] for r in results} != set(by_id):
         errors.append("results.csv and manifest.csv do not contain the same ids")
     for r in results:
-        if any(v.strip() == "" for v in r.values()):
+        if any((v or "").strip() == "" for v in r.values()):
             errors.append(f"{r['id']}: empty value in results.csv")
             continue
         size = int(r["size_bytes"])
-        if r["id"] in by_id and size != int(by_id[r["id"]]["size_bytes"]):
+        m = by_id.get(r["id"])
+        if m and size != int(m["size_bytes"]):
             errors.append(f"{r['id']}: size differs from the manifest")
+        if m and (r["type"], r["format"]) != (m["type"], m["format"]):
+            errors.append(f"{r['id']}: type/format differs from the manifest")
         for algo in ("gzip", "zstd"):
             ratio = float(r[f"ratio_{algo}"])
             if abs(ratio - int(r[f"size_{algo}"]) / size) > 1e-5:

@@ -53,6 +53,17 @@ def cpu_name():
     return platform.processor() or "unknown (write it by hand)"
 
 
+def ram_size():
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal"):
+                kib = int(line.split()[1])
+                return f"{kib / 1024 ** 2:.1f} GiB"
+    except (OSError, ValueError):
+        pass
+    return "unknown (write it by hand)"
+
+
 def write_environment(path):
     lines = [
         f"date: {datetime.now().isoformat(timespec='seconds')}",
@@ -62,7 +73,7 @@ def write_environment(path):
         f"zlib (gzip): {zlib.ZLIB_RUNTIME_VERSION}, level {config.GZIP_LEVEL}",
         f"zstd: libzstd {'.'.join(map(str, zstandard.ZSTD_VERSION))} "
         f"(python-zstandard {zstandard.__version__}), level {config.ZSTD_LEVEL}, single thread",
-        "ram: (write it by hand)",
+        f"ram: {ram_size()}",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

@@ -35,10 +35,30 @@ SKIPPED_FIELDS = ["type", "source", "reason"]
 
 # --- Helpers -----------------------------------------------------------------
 
+MAX_ATTEMPTS = 4      # tries per request before giving up
+RETRY_WAIT_S = 30     # pause after a failed try
+
+
 def polite_get(url, **kwargs):
-    """GET with a pause before every request, so we never overload a server."""
-    time.sleep(config.REQUEST_DELAY_S)
-    return SESSION.get(url, timeout=120, **kwargs)
+    """GET with a pause before every request, so we never overload a server.
+
+    Network errors and temporary server errors (HTTP 429 and 5xx) are retried,
+    so that a temporary problem never causes a file to be excluded. If the
+    problem persists the script stops instead of continuing with a wrong sample.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        time.sleep(config.REQUEST_DELAY_S if attempt == 1 else RETRY_WAIT_S)
+        try:
+            r = SESSION.get(url, timeout=120, **kwargs)
+        except requests.RequestException as e:
+            error = type(e).__name__
+        else:
+            if r.status_code != 429 and r.status_code < 500:
+                return r
+            error = f"HTTP {r.status_code}"
+        print(f"  (try {attempt}/{MAX_ATTEMPTS} failed for {url}: {error})")
+    sys.exit(f"Giving up on {url} ({error}). The run was not completed; "
+             "delete the files/ folder of this run and start it again.")
 
 
 def size_ok(size):
@@ -147,6 +167,11 @@ def select_text(sample, n, rng):
             if r.status_code == 200:
                 content, url = r.content, f"{base}/{name}"
                 break
+            if r.status_code != 404:
+                # Only "404 Not Found" means the file does not exist. Anything else
+                # (403, ...) is a problem of ours, not a reason to exclude the book.
+                sys.exit(f"Unexpected HTTP {r.status_code} for {base}/{name}. "
+                         "Stopping so the book is not excluded by mistake.")
         if content is None:
             sample.skip("text", source, "no plain-text file on the mirror")
             continue
@@ -172,7 +197,10 @@ def select_images(sample, n):
     while sample.count("image") < n:
         r = polite_get(config.COMMONS_API, params=params)
         r.raise_for_status()
-        for page in r.json().get("query", {}).get("pages", []):
+        answer = r.json()
+        if "error" in answer:
+            sys.exit(f"Wikimedia API error: {answer['error']}")
+        for page in answer.get("query", {}).get("pages", []):
             if sample.count("image") == n:
                 break
             title = page.get("title", "")
@@ -189,8 +217,12 @@ def select_images(sample, n):
                 sample.skip("image", source, f"size out of range ({size} bytes)")
                 continue
             img = polite_get(url)
-            if img.status_code != 200 or len(img.content) != size:
+            if img.status_code != 200:
                 sample.skip("image", source, f"download failed (HTTP {img.status_code})")
+                continue
+            if len(img.content) != size:
+                sample.skip("image", source, f"downloaded {len(img.content)} bytes, "
+                                             f"API says {size}")
                 continue
             fmt = config.IMAGE_MIMES[mime]
             sample.add("image", fmt, url, img.content, f"{sample.count('image') + 1:03d}.{fmt}")
@@ -223,6 +255,11 @@ def main():
             sys.exit(f"{run_dir}/manifest.csv already exists. The sample is selected only "
                      "once; use --force only if you really want to redo it.")
         shutil.rmtree(run_dir / "files", ignore_errors=True)
+    elif (run_dir / "files").exists():
+        # files/ without manifest = a previous run stopped half-way. Its files are
+        # not part of any sample; mixing them with a new run would be confusing.
+        sys.exit(f"{run_dir}/files exists but there is no manifest: a previous run did "
+                 "not finish. Delete that files/ folder and run the script again.")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Run '{args.run}': n={args.n} per type, seed={args.seed}")
