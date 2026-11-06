@@ -1,0 +1,13 @@
+run: pilot
+date: 2026-11-06T17:01:29
+seed: 1
+n_per_type: 4
+size_range_bytes: 1024-52428800
+kernel_tag: v6.12
+kernel_commit: adc218676eef25575469234709c2d87185ca223a
+code_population: 34665
+gutenberg_catalog_sha256: 6bf36a85e7c8d9d65dd2496c458ff47186639aa2e3bcb0a7d9f63907e138ab2d
+text_population: 61930 (list in text_population.csv)
+image_draw: Wikimedia Commons API, generator=random (random on the server, not reproducible with the seed)
+selected: 12
+excluded: 1
