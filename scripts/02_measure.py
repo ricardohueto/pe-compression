@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
 02_measure.py - Compresses every file of the manifest with gzip and zstd and
-writes the data file. It can be rerun as many times as needed.
+writes the data file.
 
     python scripts/02_measure.py --run final
+
+The ratios are deterministic, but the times are measured once and change on
+every run, so an existing results.csv is only overwritten with --force.
 
 Output in runs/<run>/:
     results.csv        one row per file (the data for R)
@@ -82,12 +85,16 @@ def write_environment(path):
 def main():
     ap = argparse.ArgumentParser(description="Measure compression ratio and time.")
     ap.add_argument("--run", required=True, help="run name, e.g. pilot or final")
+    ap.add_argument("--force", action="store_true", help="overwrite an existing results.csv")
     args = ap.parse_args()
 
     run_dir = config.RUNS_DIR / args.run
     manifest_path = run_dir / "manifest.csv"
     if not manifest_path.exists():
         sys.exit(f"{manifest_path} not found. Run 01_select_sample.py first.")
+    if (run_dir / "results.csv").exists() and not args.force:
+        sys.exit(f"{run_dir}/results.csv already exists. Its times were measured once; "
+                 "use --force only if you really want to measure again.")
     with open(manifest_path, newline="", encoding="utf-8") as f:
         manifest = list(csv.DictReader(f))
 
@@ -95,7 +102,11 @@ def main():
     rng = random.Random(f"{config.SEED}-order")
     results = []
     for i, row in enumerate(manifest, 1):
-        data = (run_dir / row["file"]).read_bytes()
+        path = run_dir / row["file"]
+        if not path.is_file():
+            sys.exit(f"ERROR: {row['id']} ({row['file']}) not found. To download the "
+                     f"sample again run: python scripts/00_fetch_from_manifest.py --run {args.run}")
+        data = path.read_bytes()
         if hashlib.sha256(data).hexdigest() != row["sha256"]:
             sys.exit(f"ERROR: {row['id']} ({row['file']}) has changed: SHA-256 does not match.")
 

@@ -1,2 +1,2 @@
-requests>=2.31
-zstandard>=0.22
+requests==2.34.2
+zstandard==0.25.0

@@ -7,9 +7,11 @@ the manifest. Run it ONCE per run:
     python scripts/01_select_sample.py --run final
 
 Output in runs/<run>/:
-    files/<type>/...   the selected files
-    manifest.csv       one row per selected file: id, type, format, file, source, size, SHA-256
-    skipped.csv        every candidate drawn but excluded, with the reason
+    files/<type>/...     the selected files (not in the repository)
+    manifest.csv         one row per selected file: id, type, format, file, source, size, SHA-256
+    skipped.csv          every candidate drawn but excluded, with the reason
+    text_population.csv  the Gutenberg book ids the text sample was drawn from
+    run_info.txt         seed, n, date, kernel commit, catalog SHA-256, population sizes
 """
 import argparse
 import csv
@@ -19,15 +21,11 @@ import random
 import shutil
 import subprocess
 import sys
-import time
+from datetime import datetime
 from pathlib import Path
 
-import requests
-
 import config
-
-SESSION = requests.Session()
-SESSION.headers["User-Agent"] = config.USER_AGENT
+from net import polite_get
 
 MANIFEST_FIELDS = ["id", "type", "format", "file", "source", "size_bytes", "sha256"]
 SKIPPED_FIELDS = ["type", "source", "reason"]
@@ -35,43 +33,18 @@ SKIPPED_FIELDS = ["type", "source", "reason"]
 
 # --- Helpers -----------------------------------------------------------------
 
-MAX_ATTEMPTS = 4      # tries per request before giving up
-RETRY_WAIT_S = 30     # pause after a failed try
-
-
-def polite_get(url, **kwargs):
-    """GET with a pause before every request, so we never overload a server.
-
-    Network errors and temporary server errors (HTTP 429 and 5xx) are retried,
-    so that a temporary problem never causes a file to be excluded. If the
-    problem persists the script stops instead of continuing with a wrong sample.
-    """
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        time.sleep(config.REQUEST_DELAY_S if attempt == 1 else RETRY_WAIT_S)
-        try:
-            r = SESSION.get(url, timeout=120, **kwargs)
-        except requests.RequestException as e:
-            error = type(e).__name__
-        else:
-            if r.status_code != 429 and r.status_code < 500:
-                return r
-            error = f"HTTP {r.status_code}"
-        print(f"  (try {attempt}/{MAX_ATTEMPTS} failed for {url}: {error})")
-    sys.exit(f"Giving up on {url} ({error}). The run was not completed; "
-             "delete the files/ folder of this run and start it again.")
-
-
 def size_ok(size):
     return config.MIN_BYTES <= size <= config.MAX_BYTES
 
 
 class Sample:
-    """Keeps the selected files and the excluded candidates."""
+    """Keeps the selected files, the excluded candidates and facts about the run."""
 
     def __init__(self, run_dir):
         self.run_dir = run_dir
         self.rows = []
         self.skipped = []
+        self.info = {}          # written to run_info.txt at the end
 
     def count(self, ftype):
         return sum(1 for r in self.rows if r["type"] == ftype)
@@ -100,6 +73,11 @@ class Sample:
 
 # --- Code: Linux kernel ----------------------------------------------------------
 
+def git_output(kdir, *args):
+    return subprocess.run(["git", "-C", str(kdir), *args],
+                          capture_output=True, text=True).stdout.strip()
+
+
 def select_code(sample, n, rng):
     print("\n== CODE: Linux kernel ==")
     kdir = config.KERNEL_DIR
@@ -107,8 +85,7 @@ def select_code(sample, n, rng):
         sys.exit(f"Kernel not found in {kdir}. Clone it first:\n"
                  f"  git clone --depth 1 --branch {config.KERNEL_TAG} "
                  f"https://github.com/torvalds/linux.git {kdir}")
-    tags = subprocess.run(["git", "-C", str(kdir), "tag", "--points-at", "HEAD"],
-                          capture_output=True, text=True).stdout.split()
+    tags = git_output(kdir, "tag", "--points-at", "HEAD").split()
     if config.KERNEL_TAG not in tags:
         print(f"  WARNING: could not confirm that {kdir} is at tag {config.KERNEL_TAG} "
               f"(tags at HEAD: {tags or 'none'}).")
@@ -117,6 +94,9 @@ def select_code(sample, n, rng):
     population = sorted(p.relative_to(kdir).as_posix()
                         for p in kdir.rglob("*.c") if p.is_file())
     print(f"  Population: {len(population):,} .c files")
+    sample.info["kernel_tag"] = config.KERNEL_TAG
+    sample.info["kernel_commit"] = git_output(kdir, "rev-parse", "HEAD") or "unknown"
+    sample.info["code_population"] = len(population)
     rng.shuffle(population)
 
     for rel in population:
@@ -144,7 +124,7 @@ def gutenberg_dir(book_id):
 
 def select_text(sample, n, rng):
     print("\n== TEXT: Project Gutenberg ==")
-    resp = SESSION.get(config.GUTENBERG_CATALOG_URL, timeout=300)
+    resp = polite_get(config.GUTENBERG_CATALOG_URL)
     resp.raise_for_status()
     catalog = csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig")))
 
@@ -154,6 +134,13 @@ def select_text(sample, n, rng):
                         and r["Language"].strip() == config.GUTENBERG_LANGUAGE)
     print(f"  Population: {len(population):,} books "
           f"(Type=Text, Language={config.GUTENBERG_LANGUAGE})")
+
+    # The catalog grows every day, so we keep the exact population we drew from:
+    # with this list and the seed, anyone can repeat the draw.
+    with open(sample.run_dir / "text_population.csv", "w", newline="") as f:
+        f.write("book_id\n" + "".join(f"{b}\n" for b in population))
+    sample.info["gutenberg_catalog_sha256"] = hashlib.sha256(resp.content).hexdigest()
+    sample.info["text_population"] = f"{len(population)} (list in text_population.csv)"
     rng.shuffle(population)
 
     for book_id in population:
@@ -193,6 +180,8 @@ def select_images(sample, n):
         "generator": "random", "grnnamespace": 6, "grnlimit": 10,   # 6 = File namespace
         "prop": "imageinfo", "iiprop": "url|size|mime",
     }
+    sample.info["image_draw"] = ("Wikimedia Commons API, generator=random (random on the "
+                                 "server, not reproducible with the seed)")
     seen = set()
     while sample.count("image") < n:
         r = polite_get(config.COMMONS_API, params=params)
@@ -208,7 +197,9 @@ def select_images(sample, n):
                 continue
             seen.add(title)
             info = (page.get("imageinfo") or [{}])[0]
-            mime, size, url = info.get("mime"), info.get("size"), info.get("url")
+            mime, size = info.get("mime"), info.get("size")
+            # The API adds tracking parameters (?utm_source=...); the file is the same without them.
+            url = (info.get("url") or "").split("?")[0]
             source = f"commons:{title}"
             if mime not in config.IMAGE_MIMES:
                 sample.skip("image", source, f"not JPG/PNG ({mime})")
@@ -264,6 +255,13 @@ def main():
 
     print(f"Run '{args.run}': n={args.n} per type, seed={args.seed}")
     sample = Sample(run_dir)
+    sample.info.update({
+        "run": args.run,
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "seed": args.seed,
+        "n_per_type": args.n,
+        "size_range_bytes": f"{config.MIN_BYTES}-{config.MAX_BYTES}",
+    })
     # One independent random generator per type: redoing one type never changes another.
     select_code(sample, args.n, random.Random(f"{args.seed}-code"))
     select_text(sample, args.n, random.Random(f"{args.seed}-text"))
@@ -271,6 +269,10 @@ def main():
 
     write_csv(run_dir / "manifest.csv", MANIFEST_FIELDS, sample.rows)
     write_csv(run_dir / "skipped.csv", SKIPPED_FIELDS, sample.skipped)
+    sample.info["selected"] = len(sample.rows)
+    sample.info["excluded"] = len(sample.skipped)
+    (run_dir / "run_info.txt").write_text(
+        "".join(f"{k}: {v}\n" for k, v in sample.info.items()), encoding="utf-8")
     print(f"\nDone. {len(sample.rows)} files selected, {len(sample.skipped)} candidates "
           f"excluded.\nManifest: {run_dir / 'manifest.csv'}")
 
